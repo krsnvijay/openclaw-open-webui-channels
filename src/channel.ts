@@ -750,7 +750,13 @@ async function handleChannelEvent(
   }
 
   const text = message.content?.trim() ?? "";
-  const senderName = event.user?.name ?? message.user_id;
+  // Resolve a human-readable author: display name, then email, then the
+  // user id as a last resort. Use `||` (not `??`) because Open WebUI often
+  // sends an empty-string name rather than omitting it.
+  const senderName =
+    event.user?.name?.trim() ||
+    (event.user as { email?: string } | undefined)?.email?.trim() ||
+    message.user_id;
   const channelId = event.channel_id;
   const apiAccount = getAccountFromResolved(account);
   const replyToId = message.id;
@@ -836,16 +842,26 @@ async function handleChannelEvent(
   const fromLabel = isDm
     ? `${senderName} user id:${message.user_id}`
     : `Open WebUI #${channelName} channel id:${channelId}`;
-  const body = text;
+  // Prefix the sender into the MODEL-FACING body for group/channel chats so
+  // authorship is written into the persisted transcript and survives history
+  // replay (otherwise past turns replay anonymous and the model misattributes
+  // who said what). DMs are 1:1 so they don't need it. Sanitize the display
+  // name since it is user-controlled and now lands in the prompt body.
+  // RawBody/CommandBody stay unprefixed so directive parsing (/reset, /think)
+  // still works on the bare user text.
+  const rawText = text;
+  const safeSender = senderName.replace(/[\[\]\n\r]/g, "").slice(0, 80);
+  const senderPrefix = isDm ? "" : `[${safeSender}]: `;
+  const body = `${senderPrefix}${rawText}`;
   const contextPrefix = `${threadParentContext}${replyContext}`;
-  const bodyForAgent = contextPrefix ? `${contextPrefix}${text}` : text;
+  const bodyForAgent = `${contextPrefix}${senderPrefix}${rawText}`;
 
   const ctxPayload = {
     Body: body,
     BodyForAgent: bodyForAgent,
-    RawBody: body,
-    CommandBody: body,
-    BodyForCommands: body,
+    RawBody: rawText,
+    CommandBody: rawText,
+    BodyForCommands: rawText,
     From: `open-webui:${message.user_id}`,
     To: `open-webui:${outboundTarget}`,
     SessionKey: route.sessionKey,
